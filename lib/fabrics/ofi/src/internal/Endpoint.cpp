@@ -16,6 +16,7 @@
 #include <rdma/fi_endpoint.h>
 #include <rdma/fi_errno.h>
 #include <rdma/fi_rma.h>
+#include <rdma/fi_domain.h>
 #include "Address.hpp"
 #include "CompletionQueue.hpp"
 #include "Domain.hpp"
@@ -60,15 +61,32 @@ namespace mxl::lib::fabrics::ofi
     {
         ::fid_ep* raw;
 
-        fiCall(::fi_endpoint, "Failed to create endpoint", domain->raw(), info.raw(), &raw, idToContextValue(epid));
+        // Duplicate the fi_info
+        ::fi_info* dup = fi_dupinfo(const_cast<::fi_info*>(info.raw()));
+        if (!dup) {
+            throw Exception::internal("Failed to duplicate fi_info");
+        }
 
-        // expose the private constructor to std::make_shared inside this function
-        struct MakeSharedEnabler : public Endpoint
-        {
-            MakeSharedEnabler(::fid_ep* raw, FabricInfoView info, std::shared_ptr<Domain> domain)
-                : Endpoint(raw, info, domain)
-            {}
-        };
+        // Set traffic class (DSCP) BEFORE endpoint creation
+        constexpr uint8_t tos_value = 96; // hw-tc-offload counter must be enabled
+        uint32_t tclass = fi_tc_dscp_set(tos_value); //tos value: the last 2 bits = ECN value, followed by the next 6 bits = DSCP value
+        if (dup->domain_attr) {
+            dup->domain_attr->tclass = tclass;
+        }
+        if (dup->tx_attr) {
+            dup->tx_attr->tclass = tclass;
+        }
+
+        // Create the endpoint
+        fiCall(::fi_endpoint,
+            "Failed to create endpoint",
+            domain->raw(),
+            dup,
+            &raw,
+            idToContextValue(epid));
+
+
+        fi_freeinfo(dup);
 
         return {raw, info, std::move(domain)};
     }
